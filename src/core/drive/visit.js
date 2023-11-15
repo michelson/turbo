@@ -154,10 +154,10 @@ export class Visit {
     }
   }
 
-  async issueRequest() {
+  issueRequest() {
     if (this.hasPreloadedResponse()) {
       this.simulateRequest()
-    } else if (!this.request && await this.shouldIssueRequest()) {
+    } else if (this.shouldIssueRequest() && !this.request) {
       this.request = new FetchRequest(this, FetchMethod.get, this.location)
       this.request.perform()
     }
@@ -215,8 +215,8 @@ export class Visit {
     }
   }
 
-  async getCachedSnapshot() {
-    const snapshot = (await this.view.getCachedSnapshotForLocation(this.location)) || this.getPreloadedSnapshot()
+  getCachedSnapshot() {
+    const snapshot = this.view.getCachedSnapshotForLocation(this.location) || this.getPreloadedSnapshot()
 
     if (snapshot && (!getAnchor(this.location) || snapshot.hasAnchor(getAnchor(this.location)))) {
       if (this.action == "restore" || snapshot.isPreviewable) {
@@ -231,14 +231,14 @@ export class Visit {
     }
   }
 
-  async hasCachedSnapshot() {
-    return (await this.getCachedSnapshot()) != null
+  hasCachedSnapshot() {
+    return this.getCachedSnapshot() != null
   }
 
-  async loadCachedSnapshot() {
-    const snapshot = await this.getCachedSnapshot()
+  loadCachedSnapshot() {
+    const snapshot = this.getCachedSnapshot()
     if (snapshot) {
-      const isPreview = await this.shouldIssueRequest()
+      const isPreview = this.shouldIssueRequest()
       this.render(async () => {
         this.cacheSnapshot()
         if (this.isSamePage) {
@@ -335,7 +335,7 @@ export class Visit {
   // Scrolling
 
   performScroll() {
-    if (!this.scrolled && !this.view.forceReloaded) {
+    if (!this.scrolled && !this.view.forceReloaded && !this.view.snapshot.shouldPreserveScrollPosition) {
       if (this.action == "restore") {
         this.scrollToRestoredPosition() || this.scrollToAnchor() || this.view.scrollToTop()
       } else {
@@ -391,11 +391,11 @@ export class Visit {
     return typeof this.response == "object"
   }
 
-  async shouldIssueRequest() {
+  shouldIssueRequest() {
     if (this.isSamePage) {
       return false
-    } else if (this.action === "restore") {
-      return !(await this.hasCachedSnapshot())
+    } else if (this.action == "restore") {
+      return !this.hasCachedSnapshot()
     } else {
       return this.willRender
     }

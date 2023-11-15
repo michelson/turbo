@@ -1,12 +1,13 @@
 import { nextEventLoopTick } from "../../util"
 import { View } from "../view"
 import { ErrorRenderer } from "./error_renderer"
+import { MorphRenderer } from "./morph_renderer"
 import { PageRenderer } from "./page_renderer"
 import { PageSnapshot } from "./page_snapshot"
 import { SnapshotCache } from "./snapshot_cache"
 
 export class PageView extends View {
-  snapshotCache = new SnapshotCache()
+  snapshotCache = new SnapshotCache(10)
   lastRenderedLocation = new URL(location.href)
   forceReloaded = false
 
@@ -15,7 +16,10 @@ export class PageView extends View {
   }
 
   renderPage(snapshot, isPreview = false, willRender = true, visit) {
-    const renderer = new PageRenderer(this.snapshot, snapshot, PageRenderer.renderElement, isPreview, willRender)
+    const shouldMorphPage = this.isPageRefresh(visit) && this.snapshot.shouldMorphPage
+    const rendererClass = shouldMorphPage ? MorphRenderer : PageRenderer
+
+    const renderer = new rendererClass(this.snapshot, snapshot, PageRenderer.renderElement, isPreview, willRender)
 
     if (!renderer.shouldRender) {
       this.forceReloaded = true
@@ -30,10 +34,6 @@ export class PageView extends View {
     visit?.changeHistory()
     const renderer = new ErrorRenderer(this.snapshot, snapshot, ErrorRenderer.renderElement, false)
     return this.render(renderer)
-  }
-
-  setCacheStore(cacheName) {
-    SnapshotCache.setStore(cacheName)
   }
 
   clearSnapshotCache() {
@@ -53,6 +53,10 @@ export class PageView extends View {
 
   getCachedSnapshotForLocation(location) {
     return this.snapshotCache.get(location)
+  }
+
+  isPageRefresh(visit) {
+    return !visit || this.lastRenderedLocation.href === visit.location.href
   }
 
   get snapshot() {
