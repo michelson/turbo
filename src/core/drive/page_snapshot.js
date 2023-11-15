@@ -45,10 +45,6 @@ export class PageSnapshot extends Snapshot {
     return this.documentElement.getAttribute("lang")
   }
 
-  get html() {
-    return `${this.headElement.outerHTML}\n\n${this.element.outerHTML}`
-  }
-
   get headElement() {
     return this.headSnapshot.element
   }
@@ -76,6 +72,14 @@ export class PageSnapshot extends Snapshot {
 
   get prefersViewTransitions() {
     return this.headSnapshot.getMetaValue("view-transition") === "same-origin"
+  }
+
+  get shouldMorphPage() {
+    return this.getSetting("refresh-method") === "morph"
+  }
+
+  get shouldPreserveScrollPosition() {
+    return this.getSetting("refresh-scroll") === "preserve"
   }
 
   // Private
