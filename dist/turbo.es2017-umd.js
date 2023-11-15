@@ -3,10 +3,14 @@ Turbo 7.3.0
 Copyright © 2023 37signals LLC
  */
 (function (global, factory) {
-  typeof exports === 'object' && typeof module !== 'undefined' ? factory(exports) :
-  typeof define === 'function' && define.amd ? define(['exports'], factory) :
-  (global = typeof globalThis !== 'undefined' ? globalThis : global || self, factory(global.Turbo = {}));
-})(this, (function (exports) { 'use strict';
+  typeof exports === 'object' && typeof module !== 'undefined' ? factory(exports, require('idiomorph')) :
+  typeof define === 'function' && define.amd ? define(['exports', 'idiomorph'], factory) :
+  (global = typeof globalThis !== 'undefined' ? globalThis : global || self, factory(global.Turbo = {}, global.Idiomorph));
+})(this, (function (exports, Idiomorph) { 'use strict';
+
+  function _interopDefaultLegacy (e) { return e && typeof e === 'object' && 'default' in e ? e : { 'default': e }; }
+
+  var Idiomorph__default = /*#__PURE__*/_interopDefaultLegacy(Idiomorph);
 
   /**
    * The MIT License (MIT)
@@ -179,6 +183,24 @@ Copyright © 2023 37signals LLC
         this.setAttribute("src", value);
       } else {
         this.removeAttribute("src");
+      }
+    }
+
+    /**
+     * Gets the refresh mode for the frame.
+     */
+    get refresh() {
+      return this.getAttribute("refresh")
+    }
+
+    /**
+     * Sets the refresh mode for the frame.
+     */
+    set refresh(value) {
+      if (value) {
+        this.setAttribute("refresh", value);
+      } else {
+        this.removeAttribute("refresh");
       }
     }
 
@@ -619,6 +641,18 @@ Copyright © 2023 37signals LLC
     const after = reader();
 
     return [before, after]
+  }
+
+  function fetch(url, options = {}) {
+    const modifiedHeaders = new Headers(options.headers || {});
+    const requestUID = uuid();
+    window.Turbo.session.recentRequests.add(requestUID);
+    modifiedHeaders.append("X-Turbo-Request-Id", requestUID);
+
+    return window.fetch(url, {
+      ...options,
+      headers: modifiedHeaders
+    })
   }
 
   function fetchMethodFromString(method) {
@@ -1357,7 +1391,7 @@ Copyright © 2023 37signals LLC
           if (!immediateRender) await renderInterception;
 
           await this.renderSnapshot(renderer);
-          this.delegate.viewRenderedSnapshot(snapshot, isPreview);
+          this.delegate.viewRenderedSnapshot(snapshot, isPreview, this.renderer.renderMethod);
           this.delegate.preloadOnLoadLinksForView(this.element);
           this.finishRenderingSnapshot(renderer);
         } finally {
@@ -1726,6 +1760,10 @@ Copyright © 2023 37signals LLC
     get permanentElementMap() {
       return this.currentSnapshot.getPermanentElementMapForSnapshot(this.newSnapshot)
     }
+
+    get renderMethod() {
+      return "replace"
+    }
   }
 
   class FrameRenderer extends Renderer {
@@ -2088,10 +2126,6 @@ Copyright © 2023 37signals LLC
       return this.documentElement.getAttribute("lang")
     }
 
-    get html() {
-      return `${this.headElement.outerHTML}\n\n${this.element.outerHTML}`
-    }
-
     get headElement() {
       return this.headSnapshot.element
     }
@@ -2119,6 +2153,14 @@ Copyright © 2023 37signals LLC
 
     get prefersViewTransitions() {
       return this.headSnapshot.getMetaValue("view-transition") === "same-origin"
+    }
+
+    get shouldMorphPage() {
+      return this.getSetting("refresh-method") === "morph"
+    }
+
+    get shouldPreserveScrollPosition() {
+      return this.getSetting("refresh-scroll") === "preserve"
     }
 
     // Private
@@ -2299,10 +2341,10 @@ Copyright © 2023 37signals LLC
       }
     }
 
-    async issueRequest() {
+    issueRequest() {
       if (this.hasPreloadedResponse()) {
         this.simulateRequest();
-      } else if (!this.request && await this.shouldIssueRequest()) {
+      } else if (this.shouldIssueRequest() && !this.request) {
         this.request = new FetchRequest(this, FetchMethod.get, this.location);
         this.request.perform();
       }
@@ -2360,8 +2402,8 @@ Copyright © 2023 37signals LLC
       }
     }
 
-    async getCachedSnapshot() {
-      const snapshot = (await this.view.getCachedSnapshotForLocation(this.location)) || this.getPreloadedSnapshot();
+    getCachedSnapshot() {
+      const snapshot = this.view.getCachedSnapshotForLocation(this.location) || this.getPreloadedSnapshot();
 
       if (snapshot && (!getAnchor(this.location) || snapshot.hasAnchor(getAnchor(this.location)))) {
         if (this.action == "restore" || snapshot.isPreviewable) {
@@ -2376,14 +2418,14 @@ Copyright © 2023 37signals LLC
       }
     }
 
-    async hasCachedSnapshot() {
-      return (await this.getCachedSnapshot()) != null
+    hasCachedSnapshot() {
+      return this.getCachedSnapshot() != null
     }
 
-    async loadCachedSnapshot() {
-      const snapshot = await this.getCachedSnapshot();
+    loadCachedSnapshot() {
+      const snapshot = this.getCachedSnapshot();
       if (snapshot) {
-        const isPreview = await this.shouldIssueRequest();
+        const isPreview = this.shouldIssueRequest();
         this.render(async () => {
           this.cacheSnapshot();
           if (this.isSamePage) {
@@ -2480,7 +2522,7 @@ Copyright © 2023 37signals LLC
     // Scrolling
 
     performScroll() {
-      if (!this.scrolled && !this.view.forceReloaded) {
+      if (!this.scrolled && !this.view.forceReloaded && !this.view.snapshot.shouldPreserveScrollPosition) {
         if (this.action == "restore") {
           this.scrollToRestoredPosition() || this.scrollToAnchor() || this.view.scrollToTop();
         } else {
@@ -2536,11 +2578,11 @@ Copyright © 2023 37signals LLC
       return typeof this.response == "object"
     }
 
-    async shouldIssueRequest() {
+    shouldIssueRequest() {
       if (this.isSamePage) {
         return false
-      } else if (this.action === "restore") {
-        return !(await this.hasCachedSnapshot())
+      } else if (this.action == "restore") {
+        return !this.hasCachedSnapshot()
       } else {
         return this.willRender
       }
@@ -2605,7 +2647,11 @@ Copyright © 2023 37signals LLC
 
     visitRequestStarted(visit) {
       this.progressBar.setValue(0);
-      this.showVisitProgressBarAfterDelay();
+      if (visit.hasCachedSnapshot() || visit.action != "restore") {
+        this.showVisitProgressBarAfterDelay();
+      } else {
+        this.showProgressBar();
+      }
     }
 
     visitRequestCompleted(visit) {
@@ -3022,7 +3068,9 @@ Copyright © 2023 37signals LLC
         } else {
           await this.view.renderPage(snapshot, false, true, this.currentVisit);
         }
-        this.view.scrollToTop();
+        if(!snapshot.shouldPreserveScrollPosition) {
+          this.view.scrollToTop();
+        }
         this.view.clearSnapshotCache();
       }
     }
@@ -3389,6 +3437,99 @@ Copyright © 2023 37signals LLC
     }
   }
 
+  class MorphRenderer extends Renderer {
+    async render() {
+      if (this.willRender) await this.#morphBody();
+    }
+
+    get renderMethod() {
+      return "morph"
+    }
+
+    // Private
+
+    async #morphBody() {
+      this.#morphElements(this.currentElement, this.newElement);
+      this.#reloadRemoteFrames();
+
+      dispatch("turbo:morph", {
+        detail: {
+          currentElement: this.currentElement,
+          newElement: this.newElement
+        }
+      });
+    }
+
+    #morphElements(currentElement, newElement, morphStyle = "outerHTML") {
+      this.isMorphingTurboFrame = this.#remoteFrameReplacement(currentElement, newElement);
+
+      Idiomorph__default["default"].morph(currentElement, newElement, {
+        morphStyle: morphStyle,
+        callbacks: {
+          beforeNodeAdded: this.#shouldAddElement,
+          beforeNodeMorphed: this.#shouldMorphElement,
+          beforeNodeRemoved: this.#shouldRemoveElement
+        }
+      });
+    }
+
+    #shouldAddElement = (node) => {
+      return !(node.id && node.hasAttribute("data-turbo-permanent") && document.getElementById(node.id))
+    }
+
+    #shouldMorphElement = (oldNode, newNode) => {
+      if (!(oldNode instanceof HTMLElement) || this.isMorphingTurboFrame) {
+        return true
+      }
+      else if (oldNode.hasAttribute("data-turbo-permanent")) {
+        return false
+      } else {
+        return !this.#remoteFrameReplacement(oldNode, newNode)
+      }
+    }
+
+    #remoteFrameReplacement = (oldNode, newNode) => {
+      return this.#isRemoteFrame(oldNode) && this.#isRemoteFrame(newNode) && urlsAreEqual(oldNode.getAttribute("src"), newNode.getAttribute("src"))
+    }
+
+    #shouldRemoveElement = (node) => {
+      return this.#shouldMorphElement(node)
+    }
+
+    #reloadRemoteFrames() {
+      this.#remoteFrames().forEach((frame) => {
+        if (this.#isRemoteFrame(frame)) {
+          this.#renderFrameWithMorph(frame);
+          frame.reload();
+        }
+      });
+    }
+
+    #renderFrameWithMorph(frame) {
+      frame.addEventListener("turbo:before-frame-render", (event) => {
+        event.detail.render = this.#morphFrameUpdate;
+      }, { once: true });
+    }
+
+    #morphFrameUpdate = (currentElement, newElement) => {
+      dispatch("turbo:before-frame-morph", {
+        target: currentElement,
+        detail: { currentElement, newElement }
+      });
+      this.#morphElements(currentElement, newElement.children, "innerHTML");
+    }
+
+    #isRemoteFrame(node) {
+      return node instanceof HTMLElement && node.nodeName.toLowerCase() === "turbo-frame" && node.getAttribute("src")
+    }
+
+    #remoteFrames() {
+      return Array.from(document.querySelectorAll('turbo-frame[src]')).filter(frame => {
+        return !frame.closest('[data-turbo-permanent]')
+      })
+    }
+  }
+
   class PageRenderer extends Renderer {
     static renderElement(currentElement, newElement) {
       if (document.body && newElement instanceof HTMLBodyElement) {
@@ -3580,70 +3721,7 @@ Copyright © 2023 37signals LLC
     }
   }
 
-  class DiskStore {
-    _version = "v1"
-
-    constructor() {
-      if (typeof caches === "undefined") {
-        throw new Error("windows.caches is undefined. CacheStore requires a secure context.")
-      }
-
-      this.storage = this.openStorage();
-    }
-
-    async has(location) {
-      const storage = await this.openStorage();
-      return (await storage.match(location)) !== undefined
-    }
-
-    async get(location) {
-      const storage = await this.openStorage();
-      const response = await storage.match(location);
-
-      if (response && response.ok) {
-        const html = await response.text();
-        return PageSnapshot.fromHTMLString(html)
-      }
-    }
-
-    async put(location, snapshot) {
-      const storage = await this.openStorage();
-
-      const response = new Response(snapshot.html, {
-        status: 200,
-        statusText: "OK",
-        headers: {
-          "Content-Type": "text/html"
-        }
-      });
-      await storage.put(location, response);
-      return snapshot
-    }
-
-    async clear() {
-      const storage = await this.openStorage();
-      const keys = await storage.keys();
-      await Promise.all(keys.map((key) => storage.delete(key)));
-    }
-
-    openStorage() {
-      this.storage ||= caches.open(`turbo-${this.version}`);
-      return this.storage
-    }
-
-    set version(value) {
-      if (value !== this._version) {
-        this._version = value;
-        this.storage ||= caches.open(`turbo-${this.version}`);
-      }
-    }
-
-    get version() {
-      return this._version
-    }
-  }
-
-  class MemoryStore {
+  class SnapshotCache {
     keys = []
     snapshots = {}
 
@@ -3651,25 +3729,25 @@ Copyright © 2023 37signals LLC
       this.size = size;
     }
 
-    async has(location) {
+    has(location) {
       return toCacheKey(location) in this.snapshots
     }
 
-    async get(location) {
-      if (await this.has(location)) {
+    get(location) {
+      if (this.has(location)) {
         const snapshot = this.read(location);
         this.touch(location);
         return snapshot
       }
     }
 
-    async put(location, snapshot) {
+    put(location, snapshot) {
       this.write(location, snapshot);
       this.touch(location);
       return snapshot
     }
 
-    async clear() {
+    clear() {
       this.snapshots = {};
     }
 
@@ -3698,41 +3776,8 @@ Copyright © 2023 37signals LLC
     }
   }
 
-  class SnapshotCache {
-    static currentStore = new MemoryStore(10)
-
-    static setStore(storeName) {
-      switch (storeName) {
-        case "memory":
-          SnapshotCache.currentStore = new MemoryStore(10);
-          break
-        case "disk":
-          SnapshotCache.currentStore = new DiskStore();
-          break
-        default:
-          throw new Error(`Invalid store name: ${storeName}`)
-      }
-    }
-
-    has(location) {
-      return SnapshotCache.currentStore.has(location)
-    }
-
-    get(location) {
-      return SnapshotCache.currentStore.get(location)
-    }
-
-    put(location, snapshot) {
-      return SnapshotCache.currentStore.put(location, snapshot)
-    }
-
-    clear() {
-      return SnapshotCache.currentStore.clear()
-    }
-  }
-
   class PageView extends View {
-    snapshotCache = new SnapshotCache()
+    snapshotCache = new SnapshotCache(10)
     lastRenderedLocation = new URL(location.href)
     forceReloaded = false
 
@@ -3741,7 +3786,10 @@ Copyright © 2023 37signals LLC
     }
 
     renderPage(snapshot, isPreview = false, willRender = true, visit) {
-      const renderer = new PageRenderer(this.snapshot, snapshot, PageRenderer.renderElement, isPreview, willRender);
+      const shouldMorphPage = this.isPageRefresh(visit) && this.snapshot.shouldMorphPage;
+      const rendererClass = shouldMorphPage ? MorphRenderer : PageRenderer;
+
+      const renderer = new rendererClass(this.snapshot, snapshot, PageRenderer.renderElement, isPreview, willRender);
 
       if (!renderer.shouldRender) {
         this.forceReloaded = true;
@@ -3756,10 +3804,6 @@ Copyright © 2023 37signals LLC
       visit?.changeHistory();
       const renderer = new ErrorRenderer(this.snapshot, snapshot, ErrorRenderer.renderElement, false);
       return this.render(renderer)
-    }
-
-    setCacheStore(cacheName) {
-      SnapshotCache.setStore(cacheName);
     }
 
     clearSnapshotCache() {
@@ -3779,6 +3823,10 @@ Copyright © 2023 37signals LLC
 
     getCachedSnapshotForLocation(location) {
       return this.snapshotCache.get(location)
+    }
+
+    isPageRefresh(visit) {
+      return !visit || this.lastRenderedLocation.href === visit.location.href
     }
 
     get snapshot() {
@@ -3816,7 +3864,9 @@ Copyright © 2023 37signals LLC
     async preloadURL(link) {
       const location = new URL(link.href);
 
-      if (await this.snapshotCache.has(location)) return
+      if (this.snapshotCache.has(location)) {
+        return
+      }
 
       try {
         const response = await fetch(location.toString(), { headers: { "Sec-Purpose": "prefetch", Accept: "text/html" } });
@@ -3830,9 +3880,29 @@ Copyright © 2023 37signals LLC
     }
   }
 
+  class LimitedSet extends Set {
+    constructor(maxSize) {
+      super();
+      this.maxSize = maxSize;
+    }
+
+    add(value) {
+      if (this.size >= this.maxSize) {
+        const iterator = this.values();
+        const oldestValue = iterator.next().value;
+        this.delete(oldestValue);
+      }
+      super.add(value);
+    }
+  }
+
   class Cache {
+    constructor(session) {
+      this.session = session;
+    }
+
     clear() {
-      this.store.clear();
+      this.session.clearCache();
     }
 
     resetCacheControl() {
@@ -3845,18 +3915,6 @@ Copyright © 2023 37signals LLC
 
     exemptPageFromPreview() {
       this.#setCacheControl("no-preview");
-    }
-
-    set store(store) {
-      if (typeof store === "string") {
-        SnapshotCache.setStore(store);
-      } else {
-        SnapshotCache.currentStore = store;
-      }
-    }
-
-    get store() {
-      return SnapshotCache.currentStore
     }
 
     #setCacheControl(value) {
@@ -3880,7 +3938,8 @@ Copyright © 2023 37signals LLC
     formLinkClickObserver = new FormLinkClickObserver(this, document.documentElement)
     frameRedirector = new FrameRedirector(this, document.documentElement)
     streamMessageRenderer = new StreamMessageRenderer()
-    cache = new Cache()
+    cache = new Cache(this)
+    recentRequests = new LimitedSet(20)
 
     drive = true
     enabled = true
@@ -3936,6 +3995,14 @@ Copyright © 2023 37signals LLC
         frameElement.loaded;
       } else {
         this.navigator.proposeVisit(expandURL(location), options);
+      }
+    }
+
+    refresh(url, requestId) {
+      const isRecentRequest = requestId && this.recentRequests.has(requestId);
+      if (!isRecentRequest) {
+        this.cache.exemptPageFromPreview();
+        this.visit(url, { action: "replace" });
       }
     }
 
@@ -4111,9 +4178,9 @@ Copyright © 2023 37signals LLC
       return !defaultPrevented
     }
 
-    viewRenderedSnapshot(_snapshot, isPreview) {
+    viewRenderedSnapshot(_snapshot, isPreview, renderMethod) {
       this.view.lastRenderedLocation = this.history.location;
-      this.notifyApplicationAfterRender(isPreview);
+      this.notifyApplicationAfterRender(isPreview, renderMethod);
     }
 
     preloadOnLoadLinksForView(element) {
@@ -4176,8 +4243,8 @@ Copyright © 2023 37signals LLC
       })
     }
 
-    notifyApplicationAfterRender(isPreview) {
-      return dispatch("turbo:render", { detail: { isPreview } })
+    notifyApplicationAfterRender(isPreview, renderMethod) {
+      return dispatch("turbo:render", { detail: { isPreview, renderMethod } })
     }
 
     notifyApplicationAfterPageLoad(timing = {}) {
@@ -4276,41 +4343,6 @@ Copyright © 2023 37signals LLC
       get() {
         return this.toString()
       }
-    }
-  };
-
-  const StreamActions = {
-    after() {
-      this.targetElements.forEach((e) => e.parentElement?.insertBefore(this.templateContent, e.nextSibling));
-    },
-
-    append() {
-      this.removeDuplicateTargetChildren();
-      this.targetElements.forEach((e) => e.append(this.templateContent));
-    },
-
-    before() {
-      this.targetElements.forEach((e) => e.parentElement?.insertBefore(this.templateContent, e));
-    },
-
-    prepend() {
-      this.removeDuplicateTargetChildren();
-      this.targetElements.forEach((e) => e.prepend(this.templateContent));
-    },
-
-    remove() {
-      this.targetElements.forEach((e) => e.remove());
-    },
-
-    replace() {
-      this.targetElements.forEach((e) => e.replaceWith(this.templateContent));
-    },
-
-    update() {
-      this.targetElements.forEach((targetElement) => {
-        targetElement.innerHTML = "";
-        targetElement.append(this.templateContent);
-      });
     }
   };
 
@@ -4424,6 +4456,7 @@ Copyright © 2023 37signals LLC
     PageRenderer: PageRenderer,
     PageSnapshot: PageSnapshot,
     FrameRenderer: FrameRenderer,
+    fetch: fetch,
     start: start,
     registerAdapter: registerAdapter,
     visit: visit,
@@ -4433,8 +4466,7 @@ Copyright © 2023 37signals LLC
     clearCache: clearCache,
     setProgressBarDelay: setProgressBarDelay,
     setConfirmMethod: setConfirmMethod,
-    setFormMode: setFormMode,
-    StreamActions: StreamActions
+    setFormMode: setFormMode
   });
 
   class TurboFrameMissingError extends Error {}
@@ -4690,7 +4722,7 @@ Copyright © 2023 37signals LLC
       return !defaultPrevented
     }
 
-    viewRenderedSnapshot(_snapshot, _isPreview) {}
+    viewRenderedSnapshot(_snapshot, _isPreview, _renderMethod) {}
 
     preloadOnLoadLinksForView(element) {
       session.preloadOnLoadLinksForView(element);
@@ -5005,6 +5037,45 @@ Copyright © 2023 37signals LLC
     }
   }
 
+  const StreamActions = {
+    after() {
+      this.targetElements.forEach((e) => e.parentElement?.insertBefore(this.templateContent, e.nextSibling));
+    },
+
+    append() {
+      this.removeDuplicateTargetChildren();
+      this.targetElements.forEach((e) => e.append(this.templateContent));
+    },
+
+    before() {
+      this.targetElements.forEach((e) => e.parentElement?.insertBefore(this.templateContent, e));
+    },
+
+    prepend() {
+      this.removeDuplicateTargetChildren();
+      this.targetElements.forEach((e) => e.prepend(this.templateContent));
+    },
+
+    remove() {
+      this.targetElements.forEach((e) => e.remove());
+    },
+
+    replace() {
+      this.targetElements.forEach((e) => e.replaceWith(this.templateContent));
+    },
+
+    update() {
+      this.targetElements.forEach((targetElement) => {
+        targetElement.innerHTML = "";
+        targetElement.append(this.templateContent);
+      });
+    },
+
+    refresh() {
+      session.refresh(this.baseURI, this.requestId);
+    }
+  };
+
   // <turbo-stream action=replace target=id><template>...
 
   /**
@@ -5147,6 +5218,13 @@ Copyright © 2023 37signals LLC
       return this.getAttribute("targets")
     }
 
+    /**
+     * Reads the request-id attribute
+     */
+    get requestId() {
+      return this.getAttribute("request-id")
+    }
+
     #raise(message) {
       throw new Error(`${this.description}: ${message}`)
     }
@@ -5266,6 +5344,7 @@ Copyright © 2023 37signals LLC
   exports.clearCache = clearCache;
   exports.connectStreamSource = connectStreamSource;
   exports.disconnectStreamSource = disconnectStreamSource;
+  exports.fetch = fetch;
   exports.fetchEnctypeFromString = fetchEnctypeFromString;
   exports.fetchMethodFromString = fetchMethodFromString;
   exports.isSafe = isSafe;
